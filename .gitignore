@@ -1,0 +1,24 @@
+# 系統檔案
+.DS_Store
+Thumbs.db
+
+# 編輯器設定
+.vscode/
+.idea/
+
+# 環境設定與機密
+.env
+config.local.php
+*.local.php
+
+# 相依套件
+/vendor/
+/node_modules/
+
+# 日誌與暫存
+*.log
+/tmp/
+/cache/
+
+# 上傳檔案（視需求調整）
+/uploads/
