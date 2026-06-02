@@ -22,3 +22,5 @@ config.local.php
 
 # 上傳檔案（視需求調整）
 /uploads/
+
+.env
