@@ -1,0 +1,25 @@
+{
+  "name": "my-gis-project",
+  "version": "1.0.0",
+  "description": "輔仁大學 GIS 課程的協作專案。",
+  "main": "main.js",
+ "scripts": {
+  "dev": "vite",
+  "build": "vite build",
+  "preview": "vite preview"
+},
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yuchansun/GIS.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/yuchansun/GIS/issues"
+  },
+  "homepage": "https://github.com/yuchansun/GIS#readme",
+  "devDependencies": {
+    "vite": "^8.0.16"
+  }
+}

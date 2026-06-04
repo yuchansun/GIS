@@ -1,0 +1,7 @@
+{"type":"FeatureCollection", "features": [
+{"type":"Feature","geometry":{"type":"Point","coordinates":[121.4552,25.0485,0]},"properties":{"id":"","Name":"中港大排","descriptio":"類型：都市親水 | 監測重點：人流與微氣候","timestamp":"","begin":"","end":"","altitudeMo":"","tessellate":-1,"extrude":0,"visibility":-1,"drawOrder":null,"icon":""}},
+{"type":"Feature","geometry":{"type":"Point","coordinates":[121.4285,25.0182,0]},"properties":{"id":"","Name":"塔寮坑溪","descriptio":"類型：區域防洪 | 監測重點：降雨與水位","timestamp":"","begin":"","end":"","altitudeMo":"","tessellate":-1,"extrude":0,"visibility":-1,"drawOrder":null,"icon":""}},
+{"type":"Feature","geometry":{"type":"Point","coordinates":[121.426,25.0065,0]},"properties":{"id":"","Name":"潭底溝","descriptio":"類型：工業排水 | 監測重點：水質與重金屬","timestamp":"","begin":"","end":"","altitudeMo":"","tessellate":-1,"extrude":0,"visibility":-1,"drawOrder":null,"icon":""}},
+{"type":"Feature","geometry":{"type":"Point","coordinates":[121.4118,25.0289,0]},"properties":{"id":"","Name":"十八份坑溪","descriptio":"類型：自然水系 | 監測重點：土地開發變遷","timestamp":"","begin":"","end":"","altitudeMo":"","tessellate":-1,"extrude":0,"visibility":-1,"drawOrder":null,"icon":""}},
+{"type":"Feature","geometry":{"type":"Point","coordinates":[121.4085,25.021,0]},"properties":{"id":"","Name":"啞口坑溪","descriptio":"類型：山坡排水 | 監測重點：坡度與土石流","timestamp":"","begin":"","end":"","altitudeMo":"","tessellate":-1,"extrude":0,"visibility":-1,"drawOrder":null,"icon":""}}
+]}
