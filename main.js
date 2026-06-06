@@ -13,6 +13,9 @@ let directionsRenderer;
 let safeRouteLine = null;     // 自訂避災路徑的折線
 let dangerPointsCache = null; // 河岸/河道危險點快取（A* 成本用）
 let lastEvacuation = null;    // 記住目前避難起點，供降雨更新時自動重算
+let floodLayer = null;        // 淹水潛勢圖層（視覺顯示）
+let floodPolygons = [];       // 淹水多邊形（A* point-in-polygon 用）
+let currentFloodScenario = null; // 目前載入的淹水情境標籤
 
 // 💡 智慧導航與左側面板更新核心演算法
 function isFloodSuitableShelter(shelter) {
@@ -673,10 +676,12 @@ function updateRainfallDisplay(mm, stationName) {
   const stationLabel = document.getElementById('station-name');
   if (stationLabel && stationName) stationLabel.innerText = stationName;
 
-  // 若目前已有避難路線，依最新雨量重算（雨越大越遠離河川）
-  if (lastEvacuation) {
-    runEvacuation(lastEvacuation.origin, lastEvacuation.name);
-  }
+  // 依最新雨量切換淹水情境，再依需要重算路線（雨越大、避開的淹水範圍越大）
+  ensureFloodScenario(mm).then(() => {
+    if (lastEvacuation) {
+      runEvacuation(lastEvacuation.origin, lastEvacuation.name);
+    }
+  });
 }
 
 async function fetchRainfall() {
@@ -940,6 +945,87 @@ function buildDangerPoints() {
   return dangerPointsCache;
 }
 
+// =========================================================================
+// 🌊 淹水潛勢圖：依即時雨量切換情境，並提供 point-in-polygon 給 A* 避災
+// =========================================================================
+
+// 依即時雨量（時雨量 mm/hr）決定要用哪個 6 小時降雨情境的淹水潛勢圖
+function floodFileForRainfall(mm) {
+  if (mm >= 30) return { url: '/flood_350mm.json', label: '350mm_6hr' };
+  if (mm >= 10) return { url: '/flood_250mm.json', label: '250mm_6hr' };
+  return { url: '/flood_150mm.json', label: '150mm_6hr' };
+}
+
+function ringBounds(ring) {
+  let minLng = Infinity, minLat = Infinity, maxLng = -Infinity, maxLat = -Infinity;
+  for (const [lng, lat] of ring) {
+    if (lng < minLng) minLng = lng;
+    if (lng > maxLng) maxLng = lng;
+    if (lat < minLat) minLat = lat;
+    if (lat > maxLat) maxLat = lat;
+  }
+  return [minLng, minLat, maxLng, maxLat];
+}
+
+// 解析淹水 GeoJSON → 內部多邊形陣列（含外框 bbox 以加速判斷）
+function parseFloodPolygons(geojson) {
+  const result = [];
+  (geojson.features || []).forEach(feature => {
+    const geom = feature.geometry;
+    if (!geom) return;
+    const polys = geom.type === 'Polygon' ? [geom.coordinates]
+      : geom.type === 'MultiPolygon' ? geom.coordinates : [];
+    polys.forEach(rings => {
+      if (rings && rings.length) result.push({ bbox: ringBounds(rings[0]), rings });
+    });
+  });
+  return result;
+}
+
+// 射線法：點是否在單一環內
+function pointInRing(lng, lat, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const xi = ring[i][0], yi = ring[i][1], xj = ring[j][0], yj = ring[j][1];
+    const intersect = ((yi > lat) !== (yj > lat)) && (lng < (xj - xi) * (lat - yi) / (yj - yi) + xi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+// 點是否落在任一淹水多邊形內（考慮內環孔洞）
+function pointInFlood(lng, lat) {
+  for (const poly of floodPolygons) {
+    const b = poly.bbox;
+    if (lng < b[0] || lng > b[2] || lat < b[1] || lat > b[3]) continue;
+    if (pointInRing(lng, lat, poly.rings[0])) {
+      let inHole = false;
+      for (let h = 1; h < poly.rings.length; h++) {
+        if (pointInRing(lng, lat, poly.rings[h])) { inHole = true; break; }
+      }
+      if (!inHole) return true;
+    }
+  }
+  return false;
+}
+
+// 載入對應雨量的淹水情境（同一張就略過），並更新地圖顯示
+async function ensureFloodScenario(mm) {
+  const target = floodFileForRainfall(mm);
+  if (currentFloodScenario === target.label) return;
+
+  const geojson = await fetchJson(target.url);
+  if (!geojson) return;
+
+  floodPolygons = parseFloodPolygons(geojson);
+  currentFloodScenario = target.label;
+
+  if (floodLayer) {
+    floodLayer.forEach(feature => floodLayer.remove(feature));
+    floodLayer.addGeoJson(geojson);
+  }
+}
+
 // 主演算法：回傳 { path: [{lat,lng}...], blocked }
 function computeSafeRoute(origin, dest) {
   const danger = buildDangerPoints();
@@ -967,10 +1053,12 @@ function computeSafeRoute(origin, dest) {
   const lngOf = c => west + (c + 0.5) * cellW;
 
   // 3. 預算每格「進入成本」= 基礎(1) + 危險加成 ×（即時降雨係數）
-  const NEAR_M = 50;   // 河道本體/淹水核心 → +20
-  const BANK_M = 120;  // 近河岸 → +10
+  const NEAR_M = 50;     // 河道本體 → +20
+  const BANK_M = 120;    // 近河岸 → +10
+  const FLOOD_COST = 50; // 落在官方淹水潛勢範圍內 → 大幅加成本（強烈避開）
   // 降雨係數：0mm → 1 倍；40mm/hr 以上 → 3 倍，雨越大越會遠離河川
   const rainFactor = 1 + Math.min(currentRainfall, 40) / 20;
+  const hasFlood = floodPolygons.length > 0;
   const enterCost = new Float32Array(rows * cols);
   for (let r = 0; r < rows; r++) {
     const lat = latOf(r);
@@ -984,6 +1072,8 @@ function computeSafeRoute(origin, dest) {
       let cost = 1;
       if (minD <= NEAR_M) cost += 20 * rainFactor;
       else if (minD <= BANK_M) cost += 10 * rainFactor;
+      // 真實淹水潛勢範圍：直接落在淹水區內者大幅加成本
+      if (hasFlood && pointInFlood(lng, lat)) cost += FLOOD_COST;
       enterCost[r * cols + c] = cost;
     }
   }
@@ -1109,6 +1199,18 @@ async function initMap() {
     strokeWeight: 1,
     clickable: false
   });
+
+  // ---- 🌊 1A. 官方淹水潛勢範圍（依雨量切換情境）----
+  floodLayer = new google.maps.Data();
+  floodLayer.setMap(map);
+  floodLayer.setStyle({
+    fillColor: "#1565c0",
+    fillOpacity: 0.30,
+    strokeColor: "#0d47a1",
+    strokeWeight: 1,
+    clickable: false
+  });
+  await ensureFloodScenario(currentRainfall); // 預設載入基準情境
 
   // ---- 🔵 2. 重點改造：將河流曲線直接拓寬為「氾濫水域範圍面（Polygon 視覺）」 ----
   realRiversLayer = new google.maps.Data();
@@ -1268,6 +1370,10 @@ async function initMap() {
   document.getElementById('chk-shelters').addEventListener('change', function(e) {
     const isChecked = e.target.checked;
     shelterMarkers.forEach(marker => marker.setMap(isChecked ? map : null));
+  });
+
+  document.getElementById('chk-flood')?.addEventListener('change', function(e) {
+    if (floodLayer) floodLayer.setMap(e.target.checked ? map : null);
   });
 }
 
