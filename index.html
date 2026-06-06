@@ -283,16 +283,27 @@
 
   <div class="dashboard-panel">
     <div class="panel-title">🌊 新莊五大水系防災導引</div>
-    
+
+    <input id="place-search" type="text" placeholder="🔍 搜尋地點 / 地址（例如：新莊體育場）"
+      style="width: 100%; box-sizing: border-box; padding: 10px 12px; margin-bottom: 12px; border: 1px solid #ccd; border-radius: 6px; font-size: 14px; outline: none;" />
+
     <button id="btn-mylocation" style="width: 100%; background: #0984e3; color: white; border: none; padding: 10px; border-radius: 6px; font-weight: bold; font-size: 14px; cursor: pointer; margin-bottom: 12px; display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 6px rgba(9, 132, 227, 0.3);">
       📍 偵測我目前位置（立即避難）
     </button>
+
+    <div style="font-size: 12px; color: #7f8c8d; margin-bottom: 12px; line-height: 1.5;">
+      💡 也可直接點地圖任一處，模擬該地點為受災起點測試避難路線。
+    </div>
     
     <div class="weather-box">
-      <strong>監測觀測站：</strong>新莊測站 (C0A560)<br>
-      <strong>目前時雨量：</strong><span id="rainfall-text">0.0</span> mm/hr
-      <span id="risk-badge" class="status-badge status-safe">環境安全</span>
+      <strong>監測觀測站：</strong><span id="station-name">新莊測站</span> (C0ACA0)<br>
+      <strong>目前時雨量：</strong><span id="rainfall-text">--</span> mm/hr
+      <span id="risk-badge" class="status-badge status-safe">資料載入中</span>
     </div>
+
+    <button id="btn-simulate-storm" style="width: 100%; background: #e74c3c; color: white; border: none; padding: 8px; border-radius: 6px; font-weight: bold; font-size: 13px; cursor: pointer; margin-bottom: 12px;">
+      🌧️ 模擬暴雨（測試）
+    </button>
 
     <div id="evacuation-box" class="evac-box">
       <div class="evac-title">🚨 緊急避難導引已啟動</div>
@@ -301,7 +312,7 @@
       <strong>預估步行距離：</strong><span id="walk-distance" style="font-weight: bold;">--</span><br>
       <strong>預估步行時間：</strong><span id="walk-time" style="font-weight: bold; color: #0984e3;">--</span><br>
       <small style="color: #7f8c8d; display: block; margin-top: 8px; border-top: 1px dashed #ddd; padding-top: 5px;">
-        *路徑已依據真實路網進行動態優化。
+        *本路徑由系統避開河岸與淹水範圍計算，為安全優先路徑（非最短路）。
       </small>
     </div>
 

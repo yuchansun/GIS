@@ -10,6 +10,9 @@ let selectedItem = null;let selectedPinMarker = null;let currentSidebarMode = 'r
 
 let directionsService;
 let directionsRenderer;
+let safeRouteLine = null;     // 自訂避災路徑的折線
+let dangerPointsCache = null; // 河岸/河道危險點快取（A* 成本用）
+let lastEvacuation = null;    // 記住目前避難起點，供降雨更新時自動重算
 
 // 💡 智慧導航與左側面板更新核心演算法
 function isFloodSuitableShelter(shelter) {
@@ -26,48 +29,55 @@ function getGoogleMapsUrl(shelter) {
 }
 
 function triggerEvacuationGuidance(originLatLng, originName) {
+  runEvacuation({ lat: originLatLng.lat(), lng: originLatLng.lng() }, originName);
+}
+
+function runEvacuation(origin, originName) {
   const suitableShelters = getFloodSuitableShelters();
   if (!suitableShelters.length) {
     alert('目前無符合淹水適用的避難所資料，請稍後再試。');
     return;
   }
 
+  // 記住目前避難起點，降雨更新時可自動重算路線
+  lastEvacuation = { origin, name: originName };
+
+  // 先用直線距離挑出最近的避難所當作目的地
   let nearestShelter = suitableShelters[0];
   let minDistance = Infinity;
-
   suitableShelters.forEach(shelter => {
-    const dist = Math.pow(originLatLng.lat() - shelter.lat, 2) + Math.pow(originLatLng.lng() - shelter.lng, 2);
+    const dist = approxMeters(origin.lat, origin.lng, shelter.lat, shelter.lng);
     if (dist < minDistance) {
       minDistance = dist;
       nearestShelter = shelter;
     }
   });
 
-  const request = {
-    origin: originLatLng,
-    destination: { lat: nearestShelter.lat, lng: nearestShelter.lng },
-    travelMode: google.maps.TravelMode.WALKING
-  };
+  // 用自訂成本演算法（A*）算出「避開河岸/淹水範圍」的安全路徑
+  const destination = { lat: nearestShelter.lat, lng: nearestShelter.lng };
+  const route = computeSafeRoute(origin, destination);
+  drawSafeRoute(route.path);
 
-  directionsService.route(request, function(result, status) {
-    if (status === google.maps.DirectionsStatus.OK) {
-      directionsRenderer.setDirections(result);
-      
-      const evapBox = document.getElementById("evacuation-box");
-      const originText = document.getElementById("origin-spot-name");
-      const targetText = document.getElementById("target-shelter-name");
-      const distanceText = document.getElementById("walk-distance");
-      const timeText = document.getElementById("walk-time");
+  const distanceMeters = computePathDistance(route.path);
+  const walkMinutes = Math.max(1, Math.round(distanceMeters / 1.33 / 60)); // 步行約 1.33 m/s
 
-      if (evapBox) {
-        evapBox.style.display = "block";
-        if (originText) originText.innerText = originName;
-        if (targetText) targetText.innerText = nearestShelter.name;
-        if (distanceText) distanceText.innerText = result.routes[0].legs[0].distance.text;
-        if (timeText) timeText.innerText = result.routes[0].legs[0].duration.text;
-      }
+  const evapBox = document.getElementById("evacuation-box");
+  const originText = document.getElementById("origin-spot-name");
+  const targetText = document.getElementById("target-shelter-name");
+  const distanceText = document.getElementById("walk-distance");
+  const timeText = document.getElementById("walk-time");
+
+  if (evapBox) {
+    evapBox.style.display = "block";
+    if (originText) originText.innerText = originName;
+    if (targetText) targetText.innerText = nearestShelter.name;
+    if (distanceText) {
+      distanceText.innerText = distanceMeters >= 1000
+        ? (distanceMeters / 1000).toFixed(2) + ' 公里'
+        : Math.round(distanceMeters) + ' 公尺';
     }
-  });
+    if (timeText) timeText.innerText = '約 ' + walkMinutes + ' 分鐘';
+  }
 }
 
 async function fetchJson(url) {
@@ -535,11 +545,12 @@ async function loadShelters(url) {
       name: feature.properties?.Name || feature.properties?.name2 || feature.properties?.name || '官方避難收容所',
       address: feature.properties?.address || feature.properties?.add || '地址未知',
       phone: feature.properties?.contact_ce || feature.properties?.contact_pe || '無聯絡資料',
+      district: feature.properties?.district || '',
       lat,
       lng,
       suit_for_f: feature.properties?.suit_for_f || feature.properties?.suit_for_F || ''
     };
-  }).filter(isFloodSuitableShelter);
+  }).filter(shelter => shelter.district === '新莊區' && isFloodSuitableShelter(shelter));
 }
 
 function renderShelterMarkers() {
@@ -575,6 +586,159 @@ function renderShelterMarkers() {
   updateShelterList();
 }
 
+// =========================================================================
+// 🌧️ 中央氣象署即時降雨（只呈現雨量數字，不做風險判定）
+// =========================================================================
+const RAINFALL_DATASET = 'O-A0002-001'; // 自動雨量站-雨量觀測資料
+const RAINFALL_STATION_ID = 'C0ACA0';   // 新莊雨量站（氣象署 O-A0002-001）
+let currentRainfall = 0;                 // 供路徑成本動態調整使用（第 4 步）
+let stormSimulation = false;             // 模擬暴雨測試模式
+const STORM_RAINFALL = 50;               // 模擬暴雨時雨量 (mm/hr)
+
+function parseRainfallValue(value) {
+  const n = parseFloat(value);
+  // 氣象署以 -99 / -990 等負值表示「無觀測資料」
+  if (!Number.isFinite(n) || n < 0) return null;
+  return n;
+}
+
+function describeRainfall(mm) {
+  // 採用氣象署「時雨量」客觀描述用語，僅描述雨量大小，非風險等級
+  if (mm >= 40) return '大雨以上';
+  if (mm >= 10) return '較大雨勢';
+  if (mm > 0) return '降雨中';
+  return '目前無降雨';
+}
+
+function updateRainfallDisplay(mm, stationName) {
+  currentRainfall = mm;
+  const text = document.getElementById('rainfall-text');
+  if (text) text.innerText = mm.toFixed(1);
+
+  const badge = document.getElementById('risk-badge');
+  if (badge) badge.innerText = describeRainfall(mm);
+
+  const stationLabel = document.getElementById('station-name');
+  if (stationLabel && stationName) stationLabel.innerText = stationName;
+
+  // 若目前已有避難路線，依最新雨量重算（雨越大越遠離河川）
+  if (lastEvacuation) {
+    runEvacuation(lastEvacuation.origin, lastEvacuation.name);
+  }
+}
+
+async function fetchRainfall() {
+  if (stormSimulation) return; // 模擬暴雨模式下不被真實資料覆蓋
+  const key = import.meta.env.VITE_CWA_API_KEY;
+  if (!key || key.startsWith('請貼上')) {
+    console.warn('尚未設定中央氣象署授權碼（VITE_CWA_API_KEY），略過降雨更新。');
+    const badge = document.getElementById('risk-badge');
+    if (badge) badge.innerText = '待設定授權碼';
+    return;
+  }
+
+  const url = `https://opendata.cwa.gov.tw/api/v1/rest/datastore/${RAINFALL_DATASET}`
+    + `?Authorization=${encodeURIComponent(key)}&StationId=${RAINFALL_STATION_ID}`;
+
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+
+    const stations = data?.records?.Station || [];
+    const station = stations.find(s => s.StationId === RAINFALL_STATION_ID) || stations[0];
+    if (!station) {
+      console.warn('找不到測站資料：', RAINFALL_STATION_ID);
+      return;
+    }
+
+    const el = station.RainfallElement || {};
+    // 優先取「過去 1 小時雨量」當作時雨量，其次取即時值
+    const rainfall =
+      parseRainfallValue(el.Past1hr?.Precipitation) ??
+      parseRainfallValue(el.Now?.Precipitation) ??
+      0;
+
+    updateRainfallDisplay(rainfall, station.StationName);
+  } catch (err) {
+    console.error('降雨資料載入失敗：', err);
+  }
+}
+
+function setupRainfall() {
+  fetchRainfall();
+  // 每 5 分鐘自動更新一次
+  setInterval(fetchRainfall, 5 * 60 * 1000);
+}
+
+// 🌧️ 模擬暴雨測試按鈕：一鍵切換高雨量 / 真實雨量，用於展示動態避災
+function setupStormSimulation() {
+  const btn = document.getElementById('btn-simulate-storm');
+  if (!btn) return;
+
+  btn.addEventListener('click', () => {
+    stormSimulation = !stormSimulation;
+    if (stormSimulation) {
+      btn.innerText = '☀️ 還原真實雨量';
+      btn.style.background = '#27ae60';
+      updateRainfallDisplay(STORM_RAINFALL, '模擬暴雨（測試）');
+    } else {
+      btn.innerText = '🌧️ 模擬暴雨（測試）';
+      btn.style.background = '#e74c3c';
+      fetchRainfall();
+    }
+  });
+}
+
+// 🔍 地點搜尋（Google Places Autocomplete）：搜尋地點即以該處為受災起點規劃避難
+async function setupPlaceSearch() {
+  const input = document.getElementById('place-search');
+  if (!input) return;
+
+  const { Autocomplete } = await google.maps.importLibrary("places");
+  const autocomplete = new Autocomplete(input, {
+    fields: ['geometry', 'name', 'formatted_address'],
+    componentRestrictions: { country: 'tw' }
+  });
+  autocomplete.bindTo('bounds', map);
+
+  autocomplete.addListener('place_changed', () => {
+    const place = autocomplete.getPlace();
+    if (!place.geometry || !place.geometry.location) {
+      alert('找不到該地點，請從下拉選單選擇一個建議結果。');
+      return;
+    }
+    const location = place.geometry.location;
+    map.panTo(location);
+    map.setZoom(15);
+    showUserLocation(location);
+    triggerEvacuationGuidance(location, place.name || '搜尋地點');
+  });
+}
+
+let userLocationMarker = null;
+
+function showUserLocation(position) {
+  if (userLocationMarker) {
+    userLocationMarker.setPosition(position);
+    return;
+  }
+  userLocationMarker = new google.maps.Marker({
+    position,
+    map,
+    title: '我的目前位置',
+    zIndex: 999,
+    icon: {
+      path: google.maps.SymbolPath.CIRCLE,
+      scale: 8,
+      fillColor: '#1a73e8',
+      fillOpacity: 1,
+      strokeColor: '#ffffff',
+      strokeWeight: 3
+    }
+  });
+}
+
 function setupLocateMeButton() {
   const btn = document.getElementById('btn-mylocation');
   if (!btn) return;
@@ -595,6 +759,7 @@ function setupLocateMeButton() {
         const origin = new google.maps.LatLng(position.coords.latitude, position.coords.longitude);
         map.panTo(origin);
         map.setZoom(14);
+        showUserLocation(origin);
         triggerEvacuationGuidance(origin, '我的目前位置');
       },
       error => {
@@ -649,6 +814,206 @@ function setupGeoJsonUpload() {
       alert('無法解析自訂 GeoJSON 檔案，請確認檔案格式正確。');
     }
   });
+}
+
+// =========================================================================
+// 🧭 避災路徑演算法（格網 + A*）：安全優先、避開河岸與淹水範圍
+// =========================================================================
+
+// 經緯度近似距離（公尺），在新莊小範圍內足夠精準
+function approxMeters(lat1, lng1, lat2, lng2) {
+  const dLat = (lat2 - lat1) * 110540;
+  const dLng = (lng2 - lng1) * 111320 * Math.cos((lat1 + lat2) / 2 * Math.PI / 180);
+  return Math.hypot(dLat, dLng);
+}
+
+// 最小堆積，供 A* 取出成本最低節點
+class MinHeap {
+  constructor() { this.items = []; }
+  isEmpty() { return this.items.length === 0; }
+  push(value, priority) {
+    const items = this.items;
+    items.push({ value, priority });
+    let i = items.length - 1;
+    while (i > 0) {
+      const parent = (i - 1) >> 1;
+      if (items[parent].priority <= items[i].priority) break;
+      [items[parent], items[i]] = [items[i], items[parent]];
+      i = parent;
+    }
+  }
+  pop() {
+    const items = this.items;
+    const top = items[0];
+    const last = items.pop();
+    if (items.length > 0) {
+      items[0] = last;
+      let i = 0;
+      const n = items.length;
+      while (true) {
+        let smallest = i;
+        const l = 2 * i + 1, r = 2 * i + 2;
+        if (l < n && items[l].priority < items[smallest].priority) smallest = l;
+        if (r < n && items[r].priority < items[smallest].priority) smallest = r;
+        if (smallest === i) break;
+        [items[smallest], items[i]] = [items[i], items[smallest]];
+        i = smallest;
+      }
+    }
+    return top.value;
+  }
+}
+
+// 蒐集所有河岸/河道頂點作為「危險點」，用來計算每格的危險成本
+function buildDangerPoints() {
+  if (dangerPointsCache) return dangerPointsCache;
+  const points = [];
+  [realRiversLayer, realTributariesLayer].forEach(layer => {
+    if (!layer) return;
+    layer.forEach(feature => {
+      const geometry = feature.getGeometry();
+      if (!geometry) return;
+      collectGeometryVertices(geometry).forEach(p => points.push({ lat: p.lat(), lng: p.lng() }));
+    });
+  });
+
+  // 點數過多時抽樣，避免成本計算過慢
+  const MAX = 1200;
+  if (points.length > MAX) {
+    const stride = Math.ceil(points.length / MAX);
+    dangerPointsCache = points.filter((_, i) => i % stride === 0);
+  } else {
+    dangerPointsCache = points;
+  }
+  return dangerPointsCache;
+}
+
+// 主演算法：回傳 { path: [{lat,lng}...], blocked }
+function computeSafeRoute(origin, dest) {
+  const danger = buildDangerPoints();
+  if (!danger.length) {
+    return { path: [origin, dest], blocked: false };
+  }
+
+  // 1. 計算含起終點的範圍框（留白讓路徑有空間繞行）
+  let south = Math.min(origin.lat, dest.lat);
+  let north = Math.max(origin.lat, dest.lat);
+  let west = Math.min(origin.lng, dest.lng);
+  let east = Math.max(origin.lng, dest.lng);
+  const padLat = Math.max((north - south) * 0.6, 0.012);
+  const padLng = Math.max((east - west) * 0.6, 0.012);
+  south -= padLat; north += padLat; west -= padLng; east += padLng;
+
+  // 2. 依實際尺寸決定格網解析度（每格約 60 公尺，上限 90x90）
+  const heightM = approxMeters(south, west, north, west);
+  const widthM = approxMeters(south, west, south, east);
+  const rows = Math.min(90, Math.max(20, Math.round(heightM / 60)));
+  const cols = Math.min(90, Math.max(20, Math.round(widthM / 60)));
+  const cellH = (north - south) / rows;
+  const cellW = (east - west) / cols;
+  const latOf = r => south + (r + 0.5) * cellH;
+  const lngOf = c => west + (c + 0.5) * cellW;
+
+  // 3. 預算每格「進入成本」= 基礎(1) + 危險加成 ×（即時降雨係數）
+  const NEAR_M = 50;   // 河道本體/淹水核心 → +20
+  const BANK_M = 120;  // 近河岸 → +10
+  // 降雨係數：0mm → 1 倍；40mm/hr 以上 → 3 倍，雨越大越會遠離河川
+  const rainFactor = 1 + Math.min(currentRainfall, 40) / 20;
+  const enterCost = new Float32Array(rows * cols);
+  for (let r = 0; r < rows; r++) {
+    const lat = latOf(r);
+    for (let c = 0; c < cols; c++) {
+      const lng = lngOf(c);
+      let minD = Infinity;
+      for (let i = 0; i < danger.length; i++) {
+        const d = approxMeters(lat, lng, danger[i].lat, danger[i].lng);
+        if (d < minD) { minD = d; if (minD <= NEAR_M) break; }
+      }
+      let cost = 1;
+      if (minD <= NEAR_M) cost += 20 * rainFactor;
+      else if (minD <= BANK_M) cost += 10 * rainFactor;
+      enterCost[r * cols + c] = cost;
+    }
+  }
+
+  // 4. A* 搜尋
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  const startR = clamp(Math.floor((origin.lat - south) / cellH), 0, rows - 1);
+  const startC = clamp(Math.floor((origin.lng - west) / cellW), 0, cols - 1);
+  const goalR = clamp(Math.floor((dest.lat - south) / cellH), 0, rows - 1);
+  const goalC = clamp(Math.floor((dest.lng - west) / cellW), 0, cols - 1);
+  const startIdx = startR * cols + startC;
+  const goalIdx = goalR * cols + goalC;
+
+  const gScore = new Float32Array(rows * cols).fill(Infinity);
+  const cameFrom = new Int32Array(rows * cols).fill(-1);
+  gScore[startIdx] = 0;
+
+  const heuristic = (r, c) => Math.hypot(r - goalR, c - goalC); // 最小進入成本=1，可採用
+  const open = new MinHeap();
+  open.push(startIdx, heuristic(startR, startC));
+
+  const neighbors = [
+    [-1, 0, 1], [1, 0, 1], [0, -1, 1], [0, 1, 1],
+    [-1, -1, Math.SQRT2], [-1, 1, Math.SQRT2], [1, -1, Math.SQRT2], [1, 1, Math.SQRT2]
+  ];
+
+  let found = false;
+  while (!open.isEmpty()) {
+    const current = open.pop();
+    if (current === goalIdx) { found = true; break; }
+    const cr = Math.floor(current / cols);
+    const cc = current % cols;
+    for (const [dr, dc, step] of neighbors) {
+      const nr = cr + dr, nc = cc + dc;
+      if (nr < 0 || nr >= rows || nc < 0 || nc >= cols) continue;
+      const nIdx = nr * cols + nc;
+      const tentative = gScore[current] + enterCost[nIdx] * step;
+      if (tentative < gScore[nIdx]) {
+        gScore[nIdx] = tentative;
+        cameFrom[nIdx] = current;
+        open.push(nIdx, tentative + heuristic(nr, nc));
+      }
+    }
+  }
+
+  // 5. 回溯路徑
+  if (!found) return { path: [origin, dest], blocked: true };
+  const path = [];
+  let cur = goalIdx;
+  while (cur !== -1) {
+    const r = Math.floor(cur / cols);
+    const c = cur % cols;
+    path.unshift({ lat: latOf(r), lng: lngOf(c) });
+    if (cur === startIdx) break;
+    cur = cameFrom[cur];
+  }
+  path.unshift(origin); // 用精確起點收邊
+  path.push(dest);       // 用精確終點收邊
+  return { path, blocked: false };
+}
+
+function drawSafeRoute(path) {
+  if (safeRouteLine) { safeRouteLine.setMap(null); safeRouteLine = null; }
+  if (directionsRenderer) directionsRenderer.setDirections({ routes: [] });
+  if (!path || path.length < 2) return;
+
+  safeRouteLine = new google.maps.Polyline({
+    path: path.map(p => ({ lat: p.lat, lng: p.lng })),
+    map,
+    strokeColor: '#00ff7f',
+    strokeWeight: 7,
+    strokeOpacity: 0.95,
+    geodesic: true
+  });
+}
+
+function computePathDistance(path) {
+  let total = 0;
+  for (let i = 1; i < path.length; i++) {
+    total += approxMeters(path[i - 1].lat, path[i - 1].lng, path[i].lat, path[i].lng);
+  }
+  return total;
 }
 
 // =========================================================================
@@ -817,11 +1182,20 @@ async function initMap() {
   // ---- 🏡 3. 渲染官方安全避難收容所 ----
   await loadShelters('/xinzhuang_shelters.json');
   renderShelterMarkers();
+  setupRainfall();
+  setupStormSimulation();
+  setupPlaceSearch();
   setupLocateMeButton();
   setupGeoJsonUpload();
   setupRiverJumpControls();
   document.getElementById('btn-show-river-list')?.addEventListener('click', () => setSidebarMode('rivers'));
   document.getElementById('btn-show-shelter-list')?.addEventListener('click', () => setSidebarMode('shelters'));
+
+  // 🖱️ 點地圖任一處 → 把該點當成「受災點」起算避難路線（方便測試不同地點）
+  map.addListener('click', function(event) {
+    showUserLocation(event.latLng);
+    triggerEvacuationGuidance(event.latLng, '測試受災點');
+  });
 
   // =========================================================================
   // 🎛 Ext: 右側控制面板事件監聽
@@ -832,7 +1206,7 @@ async function initMap() {
 
   document.getElementById('chk-rivers').addEventListener('change', function(e) {
     realRiversLayer.setMap(e.target.checked ? map : null);
-    if(!e.target.checked) directionsRenderer.setDirections({ routes: [] });
+    if(!e.target.checked && safeRouteLine) { safeRouteLine.setMap(null); safeRouteLine = null; }
   });
 
   document.getElementById('chk-tributaries').addEventListener('change', function(e) {
