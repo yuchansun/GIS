@@ -362,22 +362,32 @@ function renderSelectedRiverDetail(feature, nearestName) {
 function renderSelectedShelterDetail(shelter) {
   const container = document.getElementById('sidebar-info');
   if (!container) return;
+
+  // 1. 先置頂放置「Google 地圖導航按鈕」
+  // 2. 中間塞入結構化的詳細資訊（shelter.description）
+  // 3. 底部放置「返回列表」按鈕
   container.innerHTML = `
-    <div class="sidebar-info-card">
-      <div class="info-title">🏡 避難所詳細資訊</div>
-      <div><strong>名稱：</strong>${shelter.name}</div>
-      <div><strong>地址：</strong>${shelter.address}</div>
-      <div><strong>聯絡：</strong>${shelter.phone}</div>
-      <div><strong>是否淹水適用：</strong>是</div>
-      <a href="${getGoogleMapsUrl(shelter)}" target="_blank" rel="noopener" style="display:inline-block; margin-top:8px; color:#0d6efd; font-size:13px;">在 Google Maps 中檢視</a>
-      <div style="margin-top: 10px; color:#525f7f; font-size:13px; line-height:1.5;">點選列表或地圖上的其他避難所，即可更新此區資訊。</div>
+    <div style="margin-bottom: 12px;">
+      <a href="${getGoogleMapsUrl(shelter)}" 
+         target="_blank" 
+         rel="noopener" 
+         class="sidebar-action-btn primary-btn" 
+         style="width: 90%; text-align: center; text-decoration: none; display: flex; align-items: center; justify-content: center; border-radius: 4px; font-size: 15px; height: 42px; font-weight: bold;">
+         🗺️ 立即導航 (Google Maps)
+      </a>
     </div>
-    <button id="btn-clear-selection" class="sidebar-action-btn" style="width:100%; margin-top:12px;">返回列表</button>
+
+    ${shelter.description}
+    
+    <button id="btn-clear-selection" class="sidebar-action-btn secondary-btn" style="width: 100%; height: 38px; margin-top: 12px;">
+      返回列表
+    </button>
   `;
+
+  // 綁定返回按鈕事件
   const clearButton = document.getElementById('btn-clear-selection');
   if (clearButton) clearButton.addEventListener('click', clearSelection);
 }
-
 function updateSidebarPanel() {
   updateSidebarButtons();
   if (selectedItem) {
@@ -541,18 +551,60 @@ async function loadShelters(url) {
 
   sheltersData = geojson.features.map(feature => {
     const [lng, lat] = feature.geometry.coordinates || [];
+    const p = feature.properties || {};
+
     return {
-      name: feature.properties?.Name || feature.properties?.name2 || feature.properties?.name || '官方避難收容所',
-      address: feature.properties?.address || feature.properties?.add || '地址未知',
-      phone: feature.properties?.contact_ce || feature.properties?.contact_pe || '無聯絡資料',
-      district: feature.properties?.district || '',
+      name: p.Name || p.name2 || '官方避難收容所',
+      address: p.address || '地址未知',
+      phone: p.contact_ce || p.contact_pe || '無聯絡資料',
+      district: p.district || '',
       lat,
       lng,
-      suit_for_f: feature.properties?.suit_for_f || feature.properties?.suit_for_F || ''
-    };
-  }).filter(shelter => shelter.district === '新莊區' && isFloodSuitableShelter(shelter));
-}
+      suit_for_f: p.suit_for_f || '',
 
+      // ✔ 統一 UI 風格的 HTML 結構
+      description: `
+        <div class="sidebar-info-card">
+          <div class="info-title">📍 避難收容所完整資訊</div>
+          <div class="info-item"><strong>名稱：</strong>${p.Name || '未知'} (${p.code || '無代碼'})</div>
+          <div class="info-item"><strong>行政區：</strong>${p.district || '未知'}${p.village || ''}里</div>
+          <div class="info-item"><strong>地址：</strong>${p.address || '未知'} (${p.floor || '1'}樓)</div>
+          
+          <hr class="info-divider" />
+          
+          <div class="info-title">📞 聯絡資訊</div>
+          <div class="info-item"><strong>管理人：</strong>${p.contact_pe || '未知'}</div>
+          <div class="info-item"><strong>電話：</strong>${p.contact_ce || '無'}</div>
+          
+          <hr class="info-divider" />
+          
+          <div class="info-title">👥 容納與空間</div>
+          <div class="info-item"><strong>可收容人數：</strong>約 ${p.person ?? '未知'} 人</div>
+          <div class="info-item"><strong>使用面積：</strong>約 ${p.floorspace ?? '未知'} 平方公尺</div>
+          <div class="info-item"><strong>服務里別：</strong>${p.service_vi || '未知'}</div>
+          
+          <hr class="info-divider" />
+          
+          <div class="info-title">🌊 適用災害</div>
+          <div class="info-tags">
+            <span class="tag ${p.suit_for_f === '是' ? 'active' : ''}">水災</span>
+            <span class="tag ${p.suit_for_m === '聚集' || p.suit_for_m === '是' ? 'active' : ''}">土石流</span>
+            <span class="tag ${p.suit_for_e === '是' ? 'active' : ''}">地震</span>
+            <span class="tag ${p.suit_for_t === '是' ? 'active' : ''}">海嘯</span>
+            <span class="tag ${p.suit_for_w === '是' ? 'active' : ''}">風災</span>
+          </div>
+          
+          <hr class="info-divider" />
+          
+          <div class="info-hint">啟用狀態：${p.standing_shelter || '未知'}</div>
+        </div>
+      `
+    };
+  }).filter(shelter =>
+    shelter.district === '新莊區' &&
+    isFloodSuitableShelter(shelter)
+  );
+}
 function renderShelterMarkers() {
   shelterMarkers.forEach(marker => marker.setMap(null));
   shelterMarkers.length = 0;
