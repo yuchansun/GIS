@@ -6,8 +6,7 @@ let riverLabelLayer;   // 新莊五大水系標記點
 let customGeoJsonLayer; // 自訂上傳的 GeoJSON 圖層
 const shelterMarkers = []; // 儲存官方避難所標記
 let sheltersData = []; // 從 xinzhuang_shelters.json 動態載入
-let selectedItem = null;
-let currentSidebarMode = 'rivers';
+let selectedItem = null;let selectedPinMarker = null;let currentSidebarMode = 'rivers';
 
 let directionsService;
 let directionsRenderer;
@@ -263,7 +262,7 @@ function getClosestRiverNameByPoint(latLng) {
   [realRiversLayer, realTributariesLayer].forEach(layer => {
     if (!layer) return;
     layer.forEach(feature => {
-      const name = normalizeRiverName(feature.getProperty('NAME') || feature.getProperty('name') || feature.getProperty('RIVER_NAME'));
+      const name = normalizeRiverName(feature.getProperty('Name') || feature.getProperty('NAME') || feature.getProperty('name') || feature.getProperty('RIVER_NAME'));
       if (!name) return;
       const geometry = feature.getGeometry();
       if (!geometry) return;
@@ -291,8 +290,34 @@ function setSidebarMode(mode) {
   updateSidebarPanel();
 }
 
+function clearSelectedPin() {
+  if (selectedPinMarker) {
+    selectedPinMarker.setMap(null);
+    selectedPinMarker = null;
+  }
+}
+
+function showSelectedPin(position) {
+  clearSelectedPin();
+  if (!map || !position) return;
+
+  selectedPinMarker = new google.maps.Marker({
+    position,
+    map,
+    icon: {
+      path: google.maps.SymbolPath.BACKWARD_CLOSED_ARROW,
+      scale: 9,
+      fillColor: '#ff5252',
+      fillOpacity: 1,
+      strokeColor: '#ffffff',
+      strokeWeight: 3
+    }
+  });
+}
+
 function clearSelection() {
   selectedItem = null;
+  clearSelectedPin();
   updateSidebarPanel();
 }
 
@@ -308,11 +333,13 @@ function renderSelectedRiverDetail(feature, nearestName) {
   if (!container) return;
   const labelName = getRiverLabelDisplayName(feature);
   const location = feature.getGeometry().get();
+  const description = feature.getProperty('descriptio') || feature.getProperty('description') || '無額外資訊';
   container.innerHTML = `
     <div class="sidebar-info-card">
       <div class="info-title">☑️ 河流標記細節</div>
       <div><strong>標記名稱：</strong>${labelName}</div>
       <div><strong>最近河流：</strong>${nearestName}</div>
+      <div><strong>類型／說明：</strong>${description}</div>
       <div><strong>座標：</strong>${location.lat().toFixed(6)}, ${location.lng().toFixed(6)}</div>
       <div style="margin-top: 10px; color:#525f7f; font-size:13px; line-height:1.5;">點選左上方按鈕可切換列表；或點選地圖上其他河流標記查看資訊。</div>
     </div>
@@ -375,7 +402,8 @@ function renderRiverLabelList() {
   features.forEach((feature, index) => {
     const labelName = getRiverLabelDisplayName(feature);
     const location = feature.getGeometry().get();
-    const nearestName = getClosestRiverNameByPoint(location);
+    const description = feature.getProperty('descriptio') || feature.getProperty('description') || '河流監測點';
+    const nearestName = labelName || getClosestRiverNameByPoint(location);
     const item = document.createElement('div');
     item.className = 'legend-item clickable';
     item.style.justifyContent = 'space-between';
@@ -384,7 +412,7 @@ function renderRiverLabelList() {
     item.innerHTML = `
       <div style="flex: 1; min-width: 0;">
         <div style="font-weight: 700; color: #1e90ff;">${labelName}</div>
-        <div style="font-size: 12px; color: #555; margin-top: 3px; line-height: 1.4;">最近河流：${nearestName}</div>
+        <div style="font-size: 12px; color: #555; margin-top: 3px; line-height: 1.4;">${description}</div>
         <div style="font-size: 12px; color: #555; margin-top: 3px;">座標：${location.lat().toFixed(6)}, ${location.lng().toFixed(6)}</div>
       </div>
     `;
@@ -392,8 +420,7 @@ function renderRiverLabelList() {
     item.addEventListener('click', () => {
       map.panTo(location);
       map.setZoom(14);
-      selectedItem = { type: 'river', feature, nearestName };
-      updateSidebarPanel();
+      showSelectedRiverInfo(feature, nearestName);
     });
 
     container.appendChild(item);
@@ -432,8 +459,7 @@ function renderShelterList() {
         map.panTo({ lat: shelter.lat, lng: shelter.lng });
         map.setZoom(15);
       }
-      selectedItem = { type: 'shelter', shelter };
-      updateSidebarPanel();
+      showSelectedShelterInfo(shelter);
     });
 
     container.appendChild(item);
@@ -442,11 +468,14 @@ function renderShelterList() {
 
 function showSelectedRiverInfo(feature, nearestName) {
   selectedItem = { type: 'river', feature, nearestName };
+  const location = feature.getGeometry().get();
+  showSelectedPin(location);
   updateSidebarPanel();
 }
 
 function showSelectedShelterInfo(shelter) {
   selectedItem = { type: 'shelter', shelter };
+  showSelectedPin({ lat: shelter.lat, lng: shelter.lng });
   updateSidebarPanel();
 }
 
@@ -735,9 +764,10 @@ async function initMap() {
       }
     };
   });
-  await loadRiverLabelPoints('/xinzhuang_river_labels.json');
+  await loadRiverLabelPoints('/xinzhuang_real_spots.json');
   riverLabelLayer.addListener('click', function(event) {
-    const nearestName = getClosestRiverNameByPoint(event.latLng);
+    const pointName = event.feature.getProperty('Name') || event.feature.getProperty('name') || event.feature.getProperty('NAME');
+    const nearestName = pointName || getClosestRiverNameByPoint(event.latLng);
     showSelectedRiverInfo(event.feature, nearestName);
     if (map) {
       map.panTo(event.latLng);
