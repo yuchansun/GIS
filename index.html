@@ -13,17 +13,21 @@
       background-color: #f4f6f9;
     }
     
+    :root { --dash-w: 380px; }
+
     /* 🗺️ 地圖填滿整個畫面 */
  #map {
   position: fixed;
 
   top: 0;
-  left: 380px;
+  left: var(--dash-w);
 
-  width: calc(100% - 380px);
+  width: calc(100% - var(--dash-w));
   height: 100vh;
 
   z-index: 1;
+
+  transition: left .3s ease, width .3s ease;
 }
 
     /* 📊 左側：防災監測與警示主面板 */
@@ -34,7 +38,7 @@
   top: 0;
   left: 0;
 
-  width: 380px;
+  width: var(--dash-w);
   height: 100vh;
 
   z-index: 20;
@@ -46,11 +50,62 @@
   box-shadow: 3px 0 15px rgba(0,0,0,.1);
 
   overflow-y: auto;
+  overflow-x: hidden;
 
   padding: 20px;
 
   box-sizing: border-box;
+
+  transition: transform .3s ease;
 }
+
+    /* ◀ 收合把手：固定在面板右緣，可收合/展開左側面板 */
+    #dash-handle {
+      position: fixed;
+      top: 50%;
+      left: var(--dash-w);
+      transform: translateY(-50%);
+      width: 24px;
+      height: 64px;
+      border: none;
+      border-radius: 0 10px 10px 0;
+      background: #2c3e50;
+      color: #fff;
+      font-size: 16px;
+      font-weight: bold;
+      cursor: pointer;
+      z-index: 25;
+      box-shadow: 2px 0 8px rgba(0,0,0,.25);
+      transition: left .3s ease;
+    }
+
+    /* ↔ 拖曳調整寬度的邊條（面板右緣整條高度） */
+    #dash-resizer {
+      position: fixed;
+      top: 0;
+      left: var(--dash-w);
+      transform: translateX(-3px);
+      width: 6px;
+      height: 100vh;
+      cursor: col-resize;
+      background: transparent;
+      z-index: 24;
+      transition: background .15s ease;
+    }
+    #dash-resizer:hover,
+    body.dash-resizing #dash-resizer { background: rgba(52,152,219,.45); }
+
+    /* 拖曳時關閉過場動畫，避免延遲感 */
+    body.dash-resizing #map,
+    body.dash-resizing .dashboard-panel,
+    body.dash-resizing #dash-handle { transition: none !important; }
+    body.dash-resizing { user-select: none; cursor: col-resize; }
+
+    /* 收合狀態：面板滑出、地圖補滿、把手移到最左 */
+    body.dash-collapsed .dashboard-panel { transform: translateX(-100%); }
+    body.dash-collapsed #map { left: 0; width: 100%; }
+    body.dash-collapsed #dash-handle { left: 0; }
+    body.dash-collapsed #dash-resizer { display: none; }
 
     /* 🎛️ 右側：獨立的圖層切換控制面板 */
   .control-panel {
@@ -241,6 +296,27 @@
     }
 
     .info-title { font-size: 16px; font-weight: bold; margin-bottom: 5px; color: #2c3e50; }
+
+    /* Google Places 搜尋下拉選單：必須高於左側面板，否則會被擋住 */
+    .pac-container { z-index: 10000 !important; font-family: inherit; }
+
+    .search-row { display: flex; gap: 8px; margin-bottom: 6px; }
+    .search-row input { flex: 1; margin-bottom: 0 !important; }
+    #btn-place-search {
+      flex-shrink: 0;
+      border: none;
+      border-radius: 6px;
+      background: #3498db;
+      color: #fff;
+      font-weight: bold;
+      font-size: 13px;
+      padding: 0 14px;
+      cursor: pointer;
+    }
+    #search-hint { font-size: 11px; color: #7f8c8d; margin-bottom: 12px; line-height: 1.4; }
+    #search-status { font-size: 12px; margin-bottom: 10px; min-height: 18px; }
+    #search-status.ok { color: #27ae60; font-weight: bold; }
+    #search-status.err { color: #e74c3c; }
   .settings-btn {
 
   position: fixed;
@@ -275,6 +351,28 @@
   transform: rotate(90deg);
 
 }
+
+    /* 📱 RWD：手機 / 平板 — 地圖全屏，左側面板改為覆蓋式並預設收合 */
+    @media (max-width: 768px) {
+      :root { --dash-w: 86vw; }
+      .dashboard-panel { max-width: 360px; box-shadow: 4px 0 20px rgba(0,0,0,.35); }
+      /* 面板覆蓋在地圖上，地圖永遠全屏 */
+      #map { left: 0 !important; width: 100% !important; }
+      #dash-handle { left: min(86vw, 360px); }
+      body.dash-collapsed #dash-handle { left: 0; }
+      /* 手機改用覆蓋式，不提供拖曳調寬 */
+      #dash-resizer { display: none; }
+
+      /* 右側控制面板也改成較窄、覆蓋式 */
+      .control-panel { width: 86vw; max-width: 320px; right: calc(-1 * min(86vw, 320px)); }
+      .settings-btn { width: 46px; height: 46px; font-size: 20px; top: 12px; right: 12px; }
+    }
+
+    /* 更小的手機螢幕：字級與內距再縮一點 */
+    @media (max-width: 480px) {
+      .dashboard-panel { padding: 16px 14px; }
+      .panel-title { font-size: 15px; }
+    }
   </style>
 </head>
 <body>
@@ -284,8 +382,13 @@
   <div class="dashboard-panel">
     <div class="panel-title">🌊 新莊五大水系防災導引</div>
 
-    <input id="place-search" type="text" placeholder="🔍 搜尋地點 / 地址（例如：新莊體育場）"
-      style="width: 100%; box-sizing: border-box; padding: 10px 12px; margin-bottom: 12px; border: 1px solid #ccd; border-radius: 6px; font-size: 14px; outline: none;" />
+    <div class="search-row">
+      <input id="place-search" type="text" placeholder="🔍 搜尋地點 / 地址（例如：輔仁大學）"
+        style="width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid #ccd; border-radius: 6px; font-size: 14px; outline: none;" />
+      <button id="btn-place-search" type="button">搜尋</button>
+    </div>
+    <div id="search-hint">請從下拉選單點選地點，或輸入後按「搜尋」。</div>
+    <div id="search-status"></div>
 
     <button id="btn-mylocation" style="width: 100%; background: #0984e3; color: white; border: none; padding: 10px; border-radius: 6px; font-weight: bold; font-size: 14px; cursor: pointer; margin-bottom: 12px; display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 6px rgba(9, 132, 227, 0.3);">
       📍 偵測我目前位置（立即避難）
@@ -312,8 +415,23 @@
       <strong>預估步行距離：</strong><span id="walk-distance" style="font-weight: bold;">--</span><br>
       <strong>預估步行時間：</strong><span id="walk-time" style="font-weight: bold; color: #0984e3;">--</span><br>
       <small style="color: #7f8c8d; display: block; margin-top: 8px; border-top: 1px dashed #ddd; padding-top: 5px;">
-        *本路徑由系統避開河岸與淹水範圍計算，為安全優先路徑（非最短路）。
+        *綠線為系統沿真實道路、避開河岸與淹水範圍計算出的安全路線（非最短路）。<br>
+        🧭 逐步導航：依綠線安全路線顯示轉彎指示；🚶 Google 導航：開啟 Google 地圖（走最短路，不保證避災）。
       </small>
+
+      <div style="display:flex; gap:8px; margin-top:10px;">
+        <button id="btn-nav-steps" style="flex:1; background:#1a73e8; color:#fff; border:none; padding:8px; border-radius:6px; font-weight:bold; font-size:12px; cursor:pointer;">
+          🧭 逐步導航
+        </button>
+        <button id="btn-nav-external" style="flex:1; background:#27ae60; color:#fff; border:none; padding:8px; border-radius:6px; font-weight:bold; font-size:12px; cursor:pointer;">
+          🚶 Google 導航
+        </button>
+      </div>
+      <small style="color:#e67e22; display:block; margin-top:6px; font-size:11px;">
+        ⚠️ 🚶 Google 導航為最短路徑、不保證避開淹水，僅供備援；建議優先參考綠線安全路線與 🧭 逐步導航。
+      </small>
+
+      <div id="nav-steps" style="display:none; margin-top:10px; max-height:260px; overflow-y:auto; background:#fff; border:1px solid #e2e8f0; border-radius:6px; font-size:12px;"></div>
     </div>
 
     <div class="legend-box" style="margin-top: 16px;">
@@ -327,6 +445,9 @@
       </div>
     </div>
   </div>
+
+  <div id="dash-resizer" title="拖曳調整面板寬度"></div>
+  <button id="dash-handle" aria-label="收合面板" title="收合 / 展開面板">‹</button>
 <button
   id="toggle-control-panel"
   class="settings-btn"
