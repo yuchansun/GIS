@@ -341,25 +341,137 @@ function updateSidebarButtons() {
   if (shelterBtn) shelterBtn.classList.toggle('active', currentSidebarMode === 'shelters');
 }
 
+function strongNormalize(value) {
+  if (!value) return '無額外資訊';
+
+  let str = String(value);
+
+  // 1️⃣ 去掉常見前綴（避免「類型：類型：山坡排水」）
+  str = str.replace(/(類型|監測重點|說明)[:：]\s*/g, '');
+
+  // 2️⃣ 拆解所有可能分隔符
+  let parts = str
+    .split(/[|,，、\n]/)
+    .map(s => s.trim())
+    .filter(Boolean);
+
+  // 3️⃣ 強力去重（含子字串重複）
+  const result = [];
+
+  for (const p of parts) {
+    const isDuplicate = result.some(r =>
+      r === p || r.includes(p) || p.includes(r)
+    );
+
+    if (!isDuplicate) {
+      result.push(p);
+    }
+  }
+
+  return result.join(' | ');
+}
+
+// XSS 防護
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function renderSelectedRiverDetail(feature, nearestName) {
   const container = document.getElementById('sidebar-info');
   if (!container) return;
+
   const labelName = getRiverLabelDisplayName(feature);
-  const location = feature.getGeometry().get();
-  const description = feature.getProperty('descriptio') || feature.getProperty('description') || '無額外資訊';
+
+  // 🔥 取得 description（可能有多欄位污染）
+  const rawDescription =
+    feature.getProperty('descriptio') ||
+    feature.getProperty('description') ||
+    feature.getProperty('desc') ||
+    feature.getProperty('type') ||
+    '';
+
+  const description = strongNormalize(rawDescription);
+
+  // 📍 座標防呆
+  const geometry = feature.getGeometry();
+  let lat = null;
+  let lng = null;
+  let coordinateText = '無法取得座標';
+
+  if (geometry && typeof geometry.get === 'function') {
+    const location = geometry.get();
+
+    if (location &&
+        typeof location.lat === 'function' &&
+        typeof location.lng === 'function') {
+      lat = location.lat();
+      lng = location.lng();
+      coordinateText = `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+    }
+  }
+
+  // 🌍 Google Maps 按鈕
+  let googleActionButtonsHtml = '';
+
+  if (lat && lng && labelName) {
+    const urlByCoord =
+      `https://www.google.com/maps/search/?api=1&query=${lat},${lng}`;
+
+    const urlByName =
+      `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent('新莊 ' + labelName)}`;
+
+    googleActionButtonsHtml = `
+      <div style="margin-top: 12px; display: flex; gap: 8px;">
+        <a href="${urlByCoord}" target="_blank"
+           style="flex:1;text-align:center;text-decoration:none;background:#4285F4;color:#fff;padding:8px;border-radius:4px;font-weight:bold;font-size:13px;">
+          📍 依精準座標
+        </a>
+
+        <a href="${urlByName}" target="_blank"
+           style="flex:1;text-align:center;text-decoration:none;background:#1EA952;color:#fff;padding:8px;border-radius:4px;font-weight:bold;font-size:13px;">
+          🔍 依名稱搜尋
+        </a>
+      </div>
+    `;
+  }
+
+  // 🧾 render UI
   container.innerHTML = `
     <div class="sidebar-info-card">
-      <div class="info-title">☑️ 河流標記細節</div>
-      <div><strong>標記名稱：</strong>${labelName}</div>
-      <div><strong>最近河流：</strong>${nearestName}</div>
-      <div><strong>類型／說明：</strong>${description}</div>
-      <div><strong>座標：</strong>${location.lat().toFixed(6)}, ${location.lng().toFixed(6)}</div>
-      <div style="margin-top: 10px; color:#525f7f; font-size:13px; line-height:1.5;">點選左上方按鈕可切換列表；或點選地圖上其他河流標記查看資訊。</div>
+      <div class="info-title">☑️ 水系重點標記細節</div>
+
+      <div><strong>焦點名稱：</strong>${escapeHtml(labelName)}</div>
+      <div><strong>歸屬水系：</strong>${escapeHtml(nearestName || '未知')}</div>
+
+      <div><strong>類型／說明：</strong>${escapeHtml(description)}</div>
+
+      <div><strong>歷史中心座標：</strong>${coordinateText}</div>
+
+      <div style="margin-top:10px;color:#525f7f;font-size:13px;line-height:1.5;">
+        💡 註：此點為水系研究核心點，可能與現況河道不完全重合。
+      </div>
     </div>
-    <button id="btn-clear-selection" class="sidebar-action-btn" style="width:100%; margin-top:12px;">返回列表</button>
+
+    ${googleActionButtonsHtml}
+
+    <button id="btn-clear-selection"
+      class="sidebar-action-btn"
+      style="width:100%; margin-top:12px;">
+      返回列表
+    </button>
   `;
+
+  // 🔁 綁定事件
   const clearButton = document.getElementById('btn-clear-selection');
-  if (clearButton) clearButton.addEventListener('click', clearSelection);
+  if (clearButton) {
+    clearButton.addEventListener('click', clearSelection);
+  }
 }
 
 function renderSelectedShelterDetail(shelter) {
